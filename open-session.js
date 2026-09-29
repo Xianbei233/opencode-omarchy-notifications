@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { IPC_DIRECTORY } from "./ipc-path.js";
 import { requestSessionSelection } from "./session-ipc.js";
 
@@ -10,21 +10,14 @@ if (!/^ses[A-Za-z0-9_-]+$/.test(sessionID)) {
   process.exit(2);
 }
 
-const preferredSocket = process.argv[3] ?? "";
-const directory = process.argv[4] ?? "";
-const ipcDirectory = process.argv[5] || IPC_DIRECTORY;
 const SOCKET_NAME_PATTERN = /^t-\d+-[a-f0-9]+\.sock$/;
-
-function isSessionSocket(socketPath) {
-  return (
-    dirname(resolve(socketPath)) === resolve(ipcDirectory) &&
-    SOCKET_NAME_PATTERN.test(basename(socketPath))
-  );
-}
+const thirdArgument = process.argv[3] ?? "";
+const legacyAction = Boolean(process.argv[5]) && SOCKET_NAME_PATTERN.test(basename(thirdArgument));
+const directory = legacyAction ? process.argv[4] ?? "" : thirdArgument;
+const ipcDirectory = legacyAction ? process.argv[5] || IPC_DIRECTORY : process.argv[4] || IPC_DIRECTORY;
 
 async function selectInExistingTui() {
   const candidates = [];
-  if (preferredSocket && isSessionSocket(preferredSocket)) candidates.push(preferredSocket);
 
   try {
     const names = await readdir(ipcDirectory);

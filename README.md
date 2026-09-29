@@ -44,7 +44,7 @@ Keep any other plugins already in the array. The built-in OpenCode notification 
 
 Restart the OpenCode TUI after changing the plugin path.
 
-Each running TUI exposes a private, per-user Unix socket for notification clicks. The click first routes the session directly inside the TUI that sent the notification (and focuses its Kitty window when available); if that TUI has closed, it tries other live TUI instances. Only when no running TUI accepts the session does it launch `opencode --session <id>` in the session's project directory.
+Each running TUI exposes a private, per-user Unix socket for notification clicks. The click routes to a live TUI that can open the session (and focuses its Kitty window when available); only when no running TUI accepts the session does it launch `opencode --session <id>` in the session's project directory. Omarchy merges identical simultaneous notifications from multiple TUI processes. Permission alerts are sent only after confirming that the specific request is still pending.
 
 ## Development check
 

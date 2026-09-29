@@ -2,6 +2,7 @@ import { Plugin } from "@opencode/plugin/tui";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { IPC_DIRECTORY } from "./ipc-path.js";
+import { createPermissionNotifier } from "./permission-notifier.js";
 import { startSessionIpc } from "./session-ipc.js";
 
 const OPEN_SESSION_SCRIPT = fileURLToPath(new URL("./open-session.js", import.meta.url));
@@ -20,7 +21,6 @@ export default Plugin.define({
           "node",
           OPEN_SESSION_SCRIPT,
           sessionID,
-          ipc.socketPath,
           directory || "",
           IPC_DIRECTORY,
         );
@@ -47,15 +47,20 @@ export default Plugin.define({
       notify(`${agent} · ${status}`, `任务：${task}`, sessionID, directory);
     }
 
+    const permissionNotifications = createPermissionNotifier({
+      getPendingPermissions: (sessionID) => context.data.session.permission(sessionID),
+      notify: (sessionID) => notifyForSession(sessionID, "等待权限批准"),
+      onError: (error) => console.error("OpenCode permission notification check failed:", error),
+    });
+
     function isRootSession(sessionID) {
       const rootID = context.data.session.root(sessionID);
       return !rootID || rootID === sessionID;
     }
 
     const stop = [
-      context.data.on("permission.asked", (event) => {
-        notifyForSession(event.data.sessionID, "等待权限批准");
-      }),
+      context.data.on("permission.asked", permissionNotifications.asked),
+      context.data.on("permission.replied", permissionNotifications.replied),
       context.data.on("form.created", (event) => {
         notifyForSession(event.data.form.sessionID, "等待回答");
       }),
@@ -77,6 +82,7 @@ export default Plugin.define({
     ];
 
     return () => {
+      permissionNotifications.dispose();
       stop.forEach((unsubscribe) => unsubscribe());
       ipc.close();
     };

@@ -53,7 +53,7 @@ test("launches the requested session through Omarchy when no TUI socket is live"
 
   const child = spawn(
     process.execPath,
-    [HELPER, sessionID, "", project, ipcDirectory],
+    [HELPER, sessionID, project, ipcDirectory],
     { env, stdio: "ignore" },
   );
   await new Promise((resolve, reject) => {
@@ -123,7 +123,7 @@ test("routes to a live TUI socket without launching another TUI", async (t) => {
   delete env.KITTY_WINDOW_ID;
   const child = spawn(
     process.execPath,
-    [HELPER, sessionID, ipc.socketPath, project, ipcDirectory],
+    [HELPER, sessionID, project, ipcDirectory],
     { env, stdio: "ignore" },
   );
   await new Promise((resolve, reject) => {
