@@ -17,7 +17,13 @@ Notifications contain the agent name and session title, not the prompt or respon
 
 ## Install
 
-Clone this repository locally, then add its absolute path to the `plugins` array in your global `cli.json` (`~/.config/opencode/cli.json`, or `$XDG_CONFIG_HOME/opencode/cli.json`):
+Clone this repository locally:
+
+```sh
+git clone https://github.com/Xianbei233/opencode-omarchy-notifications.git
+```
+
+Then add the clone's absolute path to the `plugins` array in your global `cli.json` (`~/.config/opencode/cli.json`, or `$XDG_CONFIG_HOME/opencode/cli.json`):
 
 ```json
 {
