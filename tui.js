@@ -1,6 +1,8 @@
 import { Plugin } from "@opencode/plugin/tui";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { IPC_DIRECTORY } from "./ipc-path.js";
+import { startSessionIpc } from "./session-ipc.js";
 
 const OPEN_SESSION_SCRIPT = fileURLToPath(new URL("./open-session.js", import.meta.url));
 const SESSION_ID_PATTERN = /^ses[A-Za-z0-9_-]+$/;
@@ -8,14 +10,20 @@ const SESSION_ID_PATTERN = /^ses[A-Za-z0-9_-]+$/;
 export default Plugin.define({
   id: "opencode-omarchy-notifications",
   setup(context) {
-    // The session-specific TUI opened by a notification should not register a
-    // second global event listener and send duplicate notifications.
-    if (process.env.OPENCODE_OMARCHY_NOTIFICATION_CHILD === "1") return;
+    const ipc = startSessionIpc(context);
 
-    function notify(title, message, sessionID) {
+    function notify(title, message, sessionID, directory) {
       const args = ["--app-name", "OpenCode", "-u", "normal", "-t", "10000", title, message];
       if (typeof sessionID === "string" && SESSION_ID_PATTERN.test(sessionID)) {
-        args.push("--exec", "node", OPEN_SESSION_SCRIPT, sessionID);
+        args.push(
+          "--exec",
+          "node",
+          OPEN_SESSION_SCRIPT,
+          sessionID,
+          ipc.socketPath,
+          directory || "",
+          IPC_DIRECTORY,
+        );
       }
 
       execFile(
@@ -34,8 +42,9 @@ export default Plugin.define({
       const task = sessionTitle && sessionTitle !== "New Session"
         ? sessionTitle
         : `会话 ${sessionID.slice(-8)}`;
+      const directory = session?.directory || session?.location?.directory || context.location?.directory;
 
-      notify(`${agent} · ${status}`, `任务：${task}`, sessionID);
+      notify(`${agent} · ${status}`, `任务：${task}`, sessionID, directory);
     }
 
     function isRootSession(sessionID) {
@@ -67,6 +76,9 @@ export default Plugin.define({
       }),
     ];
 
-    return () => stop.forEach((unsubscribe) => unsubscribe());
+    return () => {
+      stop.forEach((unsubscribe) => unsubscribe());
+      ipc.close();
+    };
   },
 });
