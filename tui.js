@@ -1,13 +1,26 @@
 import { Plugin } from "@opencode/plugin/tui";
 import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const OPEN_SESSION_SCRIPT = fileURLToPath(new URL("./open-session.js", import.meta.url));
+const SESSION_ID_PATTERN = /^ses[A-Za-z0-9_-]+$/;
 
 export default Plugin.define({
   id: "opencode-omarchy-notifications",
   setup(context) {
-    function notify(title, message) {
+    // The session-specific TUI opened by a notification should not register a
+    // second global event listener and send duplicate notifications.
+    if (process.env.OPENCODE_OMARCHY_NOTIFICATION_CHILD === "1") return;
+
+    function notify(title, message, sessionID) {
+      const args = ["--app-name", "OpenCode", "-u", "normal", "-t", "10000", title, message];
+      if (typeof sessionID === "string" && SESSION_ID_PATTERN.test(sessionID)) {
+        args.push("--exec", "node", OPEN_SESSION_SCRIPT, sessionID);
+      }
+
       execFile(
         "omarchy-notification-send",
-        ["--app-name", "OpenCode", "-u", "normal", "-t", "10000", title, message],
+        args,
         (error) => {
           if (error) console.error("OpenCode notification failed:", error);
         },
@@ -22,7 +35,7 @@ export default Plugin.define({
         ? sessionTitle
         : `会话 ${sessionID.slice(-8)}`;
 
-      notify(`${agent} · ${status}`, `任务：${task}`);
+      notify(`${agent} · ${status}`, `任务：${task}`, sessionID);
     }
 
     function isRootSession(sessionID) {

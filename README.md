@@ -7,6 +7,7 @@ A local OpenCode V2 CLI/TUI plugin that sends Omarchy desktop notifications for 
 - Which agent acted (for example, `build`) and the session title.
 - Task completion, failure, and interruption for root sessions.
 - Permission requests and questions that need an answer.
+- Clicking a notification focuses or opens a terminal directly in that session.
 
 Notifications contain the agent name and session title, not the prompt or response text.
 
@@ -14,6 +15,7 @@ Notifications contain the agent name and session title, not the prompt or respon
 
 - OpenCode V2 with CLI plugin support.
 - Omarchy's `omarchy-notification-send` command available in `PATH`.
+- Omarchy's `omarchy-launch-or-focus-tui` terminal launcher available in `PATH`.
 
 ## Install
 
@@ -41,6 +43,8 @@ Then add the clone's absolute path to the `plugins` array in your global `cli.js
 Keep any other plugins already in the array. The built-in OpenCode notification popup is disabled here to avoid duplicate alerts; the plugin sends the desktop notification directly through Omarchy. Sound remains independently configurable.
 
 Restart the OpenCode TUI after changing the plugin path.
+
+Notification clicks use `opencode --session <id>` to open the matching conversation. A dedicated app ID means repeated clicks focus that session's existing window. The opened window skips this plugin's global notification listener to prevent duplicate alerts.
 
 ## Development check
 
