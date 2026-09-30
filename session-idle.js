@@ -35,9 +35,9 @@ function statusType(raw) {
   return undefined;
 }
 
-function callAccessor(accessor, sessionID) {
+function callAccessor(store, accessor, sessionID) {
   if (typeof accessor !== "function") return undefined;
-  return accessor(sessionID);
+  return accessor.call(store, sessionID);
 }
 
 // True only when the session reports a recognisable idle/waiting status.
@@ -47,7 +47,7 @@ export function isSessionIdle(store, sessionID) {
 
   let type;
   try {
-    type = statusType(callAccessor(store.status, sessionID));
+    type = statusType(callAccessor(store, store.status, sessionID));
   } catch {
     return false;
   }
@@ -55,7 +55,7 @@ export function isSessionIdle(store, sessionID) {
   if (type === undefined) {
     let session;
     try {
-      session = callAccessor(store.get, sessionID);
+      session = callAccessor(store, store.get, sessionID);
     } catch {
       return false;
     }
@@ -67,12 +67,17 @@ export function isSessionIdle(store, sessionID) {
 
 // True when the accessor reports pending work; an accessor that throws means
 // we cannot verify the session is clear, so it counts as pending (suppress).
-function hasPending(read, sessionID) {
+function hasPending(read, sessionID, onError) {
   if (typeof read !== "function") return false;
   let items;
   try {
     items = read(sessionID);
-  } catch {
+  } catch (error) {
+    try {
+      onError?.(error);
+    } catch {
+      // Diagnostics must not weaken fail-closed pending checks.
+    }
     return true;
   }
   return Array.isArray(items) ? items.length > 0 : Boolean(items);
@@ -81,10 +86,10 @@ function hasPending(read, sessionID) {
 // Builds the isIdle(sessionID) predicate used by the rechecker. A session is
 // only "truly idle" when its status says idle and neither a permission
 // request nor a question form is still open.
-export function createSessionIdleCheck({ store, getPendingPermissions, getPendingForms }) {
+export function createSessionIdleCheck({ store, getPendingPermissions, getPendingForms, onError }) {
   return (sessionID) => {
     if (!isSessionIdle(store, sessionID)) return false;
-    if (hasPending(getPendingPermissions, sessionID)) return false;
+    if (hasPending(getPendingPermissions, sessionID, onError)) return false;
     if (hasPending(getPendingForms, sessionID)) return false;
     return true;
   };

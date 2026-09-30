@@ -9,7 +9,7 @@ import { latestAssistantReply, truncateText } from "./notification-message.js";
 import { createPermissionNotifier } from "./permission-notifier.js";
 import { createIdleRechecker, createSessionIdleCheck } from "./session-idle.js";
 import { startSessionIpc } from "./session-ipc.js";
-import { readSessionPermissions } from "./session-permissions.js";
+import { createPermissionErrorReporter, readSessionPermissions } from "./session-permissions.js";
 
 const OPEN_SESSION_SCRIPT = fileURLToPath(new URL("./open-session.js", import.meta.url));
 const SESSION_ID_PATTERN = /^ses[A-Za-z0-9_-]+$/;
@@ -86,10 +86,13 @@ export default Plugin.define({
       });
     }
 
+    const reportPermissionError = createPermissionErrorReporter({
+      onError: (error) => console.error("OpenCode permission notification check failed:", error),
+    });
     const permissionNotifications = createPermissionNotifier({
       getPendingPermissions: (sessionID) => readSessionPermissions(context.data.session, sessionID),
       notify: (sessionID) => notifyForSession(sessionID, "等待权限批准"),
-      onError: (error) => console.error("OpenCode permission notification check failed:", error),
+      onError: reportPermissionError,
     });
 
     // The state module exposes pending forms as session.form.list(id); probe
@@ -115,6 +118,7 @@ export default Plugin.define({
     // idle with nothing pending; a still-running round notifies nothing.
     const isIdle = createSessionIdleCheck({
       store: context.data.session,
+      onError: reportPermissionError,
       getPendingPermissions: (sessionID) => readSessionPermissions(context.data.session, sessionID),
       getPendingForms,
     });

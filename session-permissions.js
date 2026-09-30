@@ -10,3 +10,15 @@ export function readSessionPermissions(store, sessionID) {
   }
   return requests;
 }
+
+// One shared reporter per plugin instance: constant memory, no request content,
+// and at most one diagnostic per minute across notification and idle checks.
+export function createPermissionErrorReporter({ onError = console.error, now = Date.now } = {}) {
+  let nextReportAt = -Infinity;
+  return () => {
+    const time = now();
+    if (time < nextReportAt) return;
+    nextReportAt = time + 60_000;
+    onError(new Error("OpenCode permission notification/check failed (details redacted); unreadable permission state suppresses permission/completion notifications"));
+  };
+}

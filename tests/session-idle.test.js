@@ -37,6 +37,38 @@ test("isSessionIdle falls back to the session record's status", () => {
   assert.equal(isSessionIdle(store, SESSION_ID), true);
 });
 
+test("isSessionIdle preserves the owner of status and get methods", () => {
+  const store = {
+    cachedStatus: { type: "idle" },
+    sessions: { [SESSION_ID]: { status: "idle" } },
+    status(id) {
+      assert.equal(this, store);
+      assert.equal(id, SESSION_ID);
+      return this.cachedStatus;
+    },
+    get(id) {
+      assert.equal(this, store);
+      return this.sessions[id];
+    },
+  };
+  assert.equal(isSessionIdle(store, SESSION_ID), true);
+  store.cachedStatus = "busy";
+  assert.equal(isSessionIdle(store, SESSION_ID), false);
+  store.cachedStatus = undefined;
+  assert.equal(isSessionIdle(store, SESSION_ID), true);
+  store.sessions[SESSION_ID].status = "busy";
+  assert.equal(isSessionIdle(store, SESSION_ID), false);
+});
+
+test("permission diagnostic failures do not weaken fail-closed idle checks", () => {
+  const isIdle = createSessionIdleCheck({
+    store: storeWith("idle"),
+    getPendingPermissions: () => { throw new Error("unreadable"); },
+    onError: () => { throw new Error("logger failure"); },
+  });
+  assert.equal(isIdle(SESSION_ID), false);
+});
+
 test("isSessionIdle rejects busy and unknown statuses", () => {
   for (const status of [
     { type: "busy" },
