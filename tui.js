@@ -2,6 +2,7 @@ import { Plugin } from "@opencode/plugin/tui";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { IPC_DIRECTORY } from "./ipc-path.js";
+import { createKittyFocus } from "./kitty-focus.js";
 import { createPermissionNotifier } from "./permission-notifier.js";
 import { startSessionIpc } from "./session-ipc.js";
 
@@ -13,7 +14,7 @@ export default Plugin.define({
   setup(context) {
     const ipc = startSessionIpc(context);
 
-    function notify(title, message, sessionID, directory) {
+    function send(title, message, sessionID, directory) {
       const args = ["--app-name", "OpenCode", "-u", "normal", "-t", "10000", title, message];
       if (typeof sessionID === "string" && SESSION_ID_PATTERN.test(sessionID)) {
         args.push(
@@ -33,6 +34,19 @@ export default Plugin.define({
           if (error) console.error("OpenCode notification failed:", error);
         },
       );
+    }
+
+    const focus = createKittyFocus({
+      execFile,
+      onError: (error) => console.error("OpenCode focus check failed:", error),
+    });
+
+    // Skip the desktop notification while the Kitty window hosting this TUI
+    // already has focus; anything we cannot determine counts as unfocused.
+    function notify(title, message, sessionID, directory) {
+      void focus.focused().then((isFocused) => {
+        if (!isFocused) send(title, message, sessionID, directory);
+      });
     }
 
     function notifyForSession(sessionID, status) {
