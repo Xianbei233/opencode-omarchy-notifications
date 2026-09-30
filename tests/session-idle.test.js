@@ -134,14 +134,14 @@ test("recheck notifies only when the session is idle at check time", async () =>
     delayMs: 5,
   });
 
-  rechecker.recheck(SESSION_ID, "任务完成");
+  rechecker.recheck(SESSION_ID, "最新回复");
   await pause(30);
   assert.deepEqual(notifications, []);
 
   status = { type: "idle" };
-  rechecker.recheck(SESSION_ID, "任务完成");
+  rechecker.recheck(SESSION_ID, "最新回复");
   await pause(30);
-  assert.deepEqual(notifications, [[SESSION_ID, "任务完成"]]);
+  assert.deepEqual(notifications, [[SESSION_ID, "最新回复"]]);
   rechecker.dispose();
 });
 
@@ -154,15 +154,15 @@ test("recheck coalesces repeated events for the same session", async () => {
     delayMs: 10,
   });
 
-  rechecker.recheck(SESSION_ID, "任务完成");
-  rechecker.recheck(SESSION_ID, "任务完成");
+  rechecker.recheck(SESSION_ID, "最新回复");
+  rechecker.recheck(SESSION_ID, "最新回复");
   rechecker.recheck("ses_otherSession", "执行失败");
   await pause(40);
   rechecker.dispose();
 
   assert.equal(checks, 2);
   assert.deepEqual(notifications, [
-    [SESSION_ID, "任务完成"],
+    [SESSION_ID, "最新回复"],
     ["ses_otherSession", "执行失败"],
   ]);
 });
@@ -175,7 +175,7 @@ test("recheck suppresses a pending notification on dispose", async () => {
     delayMs: 20,
   });
 
-  rechecker.recheck(SESSION_ID, "任务完成");
+  rechecker.recheck(SESSION_ID, "最新回复");
   rechecker.dispose();
   await pause(40);
 
@@ -192,7 +192,7 @@ test("recheck reports errors from the idle probe and notify", async () => {
     delayMs: 5,
   });
 
-  rechecker.recheck(SESSION_ID, "任务完成");
+  rechecker.recheck(SESSION_ID, "最新回复");
   await pause(30);
   assert.deepEqual(errors, ["probe"]);
   assert.deepEqual(notifications, []);

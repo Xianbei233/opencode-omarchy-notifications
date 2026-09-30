@@ -129,7 +129,7 @@ export default Plugin.define({
       context.data.on("permission.replied", permissionNotifications.replied),
       context.data.on("session.execution.succeeded", (event) => {
         if (isRootSession(event.data.sessionID)) {
-          completionRecheck.recheck(event.data.sessionID, "任务完成");
+          completionRecheck.recheck(event.data.sessionID, "最新回复");
         }
       }),
       context.data.on("session.execution.failed", (event) => {

@@ -5,7 +5,7 @@ A local OpenCode V2 CLI/TUI plugin that sends Omarchy desktop notifications for 
 ## What it reports
 
 - Which agent acted (for example, `build`) and the session title.
-- Task completion, failure, and interruption for root sessions — reported only after a delayed recheck confirms the session is truly idle with no pending permission or form, so a round that pauses for input never claims the task is done.
+- Latest reply, failure, and interruption statuses for root sessions — reported only after a delayed recheck confirms the session is truly idle with no pending permission or form, so a round that pauses for input never claims the task is done.
 - Permission requests and questions that need an answer.
 - Clicking a notification switches the TUI that sent it to that session; it starts a TUI only when no running TUI can handle the session.
 
