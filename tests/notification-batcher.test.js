@@ -74,3 +74,18 @@ test("flushes queued notifications on dispose", async () => {
   assert.equal(sent.length, 1);
   assert.equal(sent[0].title, "build · 等待权限批准");
 });
+
+test("delivers notifications without consulting Kitty focus state", async (t) => {
+  for (const state of ["focused", "unfocused", "kitty-unavailable"]) {
+    await t.test(state, async () => {
+      const sent = [];
+      const batcher = createNotificationBatcher({ send: (notification) => sent.push(notification), windowMs: 0 });
+      batcher.notify(entry("任务完成"));
+      await pause(10);
+      batcher.dispose();
+
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0].title, "build · 任务完成");
+    });
+  }
+});

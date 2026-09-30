@@ -3,7 +3,6 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { IPC_DIRECTORY } from "./ipc-path.js";
 import { createFormNotifier } from "./form-notifier.js";
-import { createKittyFocus } from "./kitty-focus.js";
 import { createNotificationBatcher } from "./notification-batcher.js";
 import { latestAssistantReply, truncateText } from "./notification-message.js";
 import { createPermissionNotifier } from "./permission-notifier.js";
@@ -41,20 +40,7 @@ export default Plugin.define({
       );
     }
 
-    const focus = createKittyFocus({
-      execFile,
-      onError: (error) => console.error("OpenCode focus check failed:", error),
-    });
-
-    // Skip the desktop notification while the Kitty window hosting this TUI
-    // already has focus; anything we cannot determine counts as unfocused.
-    const batcher = createNotificationBatcher({
-      send: ({ title, message, sessionID, directory }) => {
-        void focus.focused().then((isFocused) => {
-          if (!isFocused) send({ title, message, sessionID, directory });
-        });
-      },
-    });
+    const batcher = createNotificationBatcher({ send });
 
     // Reads the cached session messages; any failure just omits the reply line.
     function readMessages(sessionID) {
