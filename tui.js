@@ -2,6 +2,7 @@ import { Plugin } from "@opencode/plugin/tui";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { IPC_DIRECTORY } from "./ipc-path.js";
+import { createFormNotifier } from "./form-notifier.js";
 import { createKittyFocus } from "./kitty-focus.js";
 import { createPermissionNotifier } from "./permission-notifier.js";
 import { startSessionIpc } from "./session-ipc.js";
@@ -67,6 +68,13 @@ export default Plugin.define({
       onError: (error) => console.error("OpenCode permission notification check failed:", error),
     });
 
+    const formNotifications = createFormNotifier({
+      getPendingForms: (sessionID) => context.data.session.question?.(sessionID),
+      isSessionAlive: (sessionID) => Boolean(context.data.session.get(sessionID)),
+      notify: (sessionID) => notifyForSession(sessionID, "等待回答"),
+      onError: (error) => console.error("OpenCode form notification check failed:", error),
+    });
+
     function isRootSession(sessionID) {
       const rootID = context.data.session.root(sessionID);
       return !rootID || rootID === sessionID;
@@ -75,9 +83,9 @@ export default Plugin.define({
     const stop = [
       context.data.on("permission.asked", permissionNotifications.asked),
       context.data.on("permission.replied", permissionNotifications.replied),
-      context.data.on("form.created", (event) => {
-        notifyForSession(event.data.form.sessionID, "等待回答");
-      }),
+      context.data.on("form.created", formNotifications.created),
+      context.data.on("form.replied", formNotifications.closed),
+      context.data.on("form.cancelled", formNotifications.closed),
       context.data.on("session.execution.succeeded", (event) => {
         if (isRootSession(event.data.sessionID)) {
           notifyForSession(event.data.sessionID, "任务完成");
@@ -97,6 +105,7 @@ export default Plugin.define({
 
     return () => {
       permissionNotifications.dispose();
+      formNotifications.dispose();
       stop.forEach((unsubscribe) => unsubscribe());
       ipc.close();
     };
