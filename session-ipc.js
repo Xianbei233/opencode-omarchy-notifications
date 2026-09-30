@@ -46,7 +46,9 @@ export function startSessionIpc(context, directory = IPC_DIRECTORY) {
 
           let session = context.data.session.get(sessionID);
           if (!session) {
-            await context.data.session.sync(sessionID).catch(() => {});
+            await context.data.session.sync(sessionID).catch((error) => {
+              console.error("Could not sync OpenCode session:", error);
+            });
             session = context.data.session.get(sessionID);
           }
           if (!session || clientClosed || closed) return { handled: false };
