@@ -71,3 +71,21 @@ test("cancels an ask that is replied to before the pending-state check", async (
   assert.equal(readCount, 0);
   assert.deepEqual(notifications, []);
 });
+
+test("child permission asks, including repeats, never read cache or notify", async () => {
+  let reads = 0;
+  const notifications = [];
+  const notifier = createPermissionNotifier({
+    getPendingPermissions: () => { reads += 1; return [{ id: REQUEST_ID }]; },
+    notify: (id) => notifications.push(id),
+    isRootSession: (id) => id === SESSION_ID,
+    delayMs: 1,
+  });
+  const child = `${SESSION_ID}_child`;
+  notifier.asked(event({ id: REQUEST_ID, sessionID: child }));
+  notifier.asked(event({ id: REQUEST_ID, sessionID: child }));
+  await pause(10);
+  notifier.dispose();
+  assert.equal(reads, 0);
+  assert.deepEqual(notifications, []);
+});

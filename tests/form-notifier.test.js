@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { wireFormNotifications } from "../form-notifier.js";
+import { createPendingFormsReader, wireFormNotifications } from "../form-notifier.js";
 import { createNotificationBatcher } from "../notification-batcher.js";
 
 const SESSION_ID = "ses_formTest123";
@@ -11,25 +11,38 @@ function pause(ms) {
 }
 
 function eventData(id = FORM_ID) {
-  return { id, sessionID: SESSION_ID, type: "question", data: {} };
+  return { form: { id, sessionID: SESSION_ID, title: "Choose an option", fields: [{ key: "choice", type: "string" }] } };
 }
 
 function harness({ forms, errors = [], delayMs = 500 }) {
   const listeners = new Map();
   const sent = [];
+  const location = { directory: "/workspace" };
+  const formAccessor = {
+    sync: async (sessionID, ref) => {
+      assert.equal(sessionID, SESSION_ID);
+      assert.equal(ref, location);
+    },
+    list: (sessionID, ref) => {
+      assert.equal(sessionID, SESSION_ID);
+      assert.equal(ref, location);
+      return forms();
+    },
+  };
+  const data = {
+    on: (type, handler) => {
+      listeners.set(type, handler);
+      return () => listeners.delete(type);
+    },
+    session: { form: formAccessor },
+  };
   const batcher = createNotificationBatcher({
     send: (notification) => sent.push(notification),
     windowMs: 2,
   });
   const stop = wireFormNotifications({
-    data: { on: (type, handler) => {
-      listeners.set(type, handler);
-      return () => listeners.delete(type);
-    } },
-    getPendingForms: async (sessionID) => {
-      assert.equal(sessionID, SESSION_ID);
-      return forms();
-    },
+    data,
+    getPendingForms: createPendingFormsReader(data, location),
     notify: (sessionID) => batcher.notify({
       sessionID,
       agent: "build",
@@ -90,10 +103,26 @@ test("missing or malformed pending accessor is visible and fails closed", async 
   }
 });
 
-test("created event with legacy nested payload is ignored rather than guessed", async () => {
+test("created event accepts the flat event shape seen in an earlier runtime", async () => {
   const h = harness({ forms: () => [{ id: FORM_ID }], delayMs: 1 });
-  h.listeners.get("form.created")({ data: { form: eventData() } });
+  h.listeners.get("form.created")({ data: { id: FORM_ID, sessionID: SESSION_ID } });
   await pause(20);
   h.stop();
-  assert.deepEqual(h.sent, []);
+  assert.equal(h.sent.length, 1);
+});
+
+test("child forms are filtered before pending state is read", async () => {
+  let reads = 0;
+  const sent = [];
+  const notifier = (await import("../form-notifier.js")).createFormNotifier({
+    getPendingForms: async () => { reads += 1; return [{ id: FORM_ID }]; },
+    notify: (id) => sent.push(id),
+    isRootSession: (id) => id === SESSION_ID,
+    delayMs: 1,
+  });
+  notifier.created({ data: { form: { id: FORM_ID, sessionID: `${SESSION_ID}_child` } } });
+  await pause(10);
+  notifier.dispose();
+  assert.equal(reads, 0);
+  assert.deepEqual(sent, []);
 });

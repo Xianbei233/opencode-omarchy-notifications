@@ -7,6 +7,7 @@ export function createFormNotifier({
   getPendingForms,
   notify,
   onError = console.error,
+  isRootSession = () => true,
   delayMs = 500,
 }) {
   const timers = new Map();
@@ -22,7 +23,7 @@ export function createFormNotifier({
   }
 
   async function notifyIfPending(sessionID, formID) {
-    if (disposed || recentlyClosed.has(formID) || notified.has(formID) || checking.has(formID)) return;
+    if (disposed || !isRootSession(sessionID) || recentlyClosed.has(formID) || notified.has(formID) || checking.has(formID)) return;
     checking.add(formID);
     try {
       const forms = await getPendingForms(sessionID);
@@ -43,9 +44,12 @@ export function createFormNotifier({
   }
 
   function created(event) {
-    const formID = event?.data?.id;
-    const sessionID = event?.data?.sessionID;
+    // Accept the nested and flat created-event forms observed across runtimes;
+    // settlement events expose the closed form's id directly.
+    const formID = event?.data?.form?.id ?? event?.data?.id;
+    const sessionID = event?.data?.form?.sessionID ?? event?.data?.sessionID;
     if (typeof sessionID !== "string" || typeof formID !== "string" || !formID) return;
+    if (!isRootSession(sessionID)) return;
 
     pruneClosed();
     if (disposed || recentlyClosed.has(formID) || notified.has(formID) || timers.has(formID)) return;
@@ -81,10 +85,21 @@ export function createFormNotifier({
   return { created, closed, dispose };
 }
 
+export function createPendingFormsReader(data, location) {
+  return async (sessionID) => {
+    const forms = data?.session?.form;
+    if (typeof forms?.sync !== "function" || typeof forms?.list !== "function") {
+      throw new TypeError("V2 session.form sync/list accessor is unavailable");
+    }
+    await forms.sync(sessionID, location);
+    return forms.list(sessionID, location);
+  };
+}
+
 // Keep the V2 event names and payload routing together with the delayed
 // pending-state check so event-contract tests cover the complete path.
-export function wireFormNotifications({ data, getPendingForms, notify, onError, delayMs }) {
-  const notifier = createFormNotifier({ getPendingForms, notify, onError, delayMs });
+export function wireFormNotifications({ data, getPendingForms, notify, onError, isRootSession, delayMs }) {
+  const notifier = createFormNotifier({ getPendingForms, notify, onError, isRootSession, delayMs });
   const stop = [
     data.on("form.created", notifier.created),
     data.on("form.replied", notifier.closed),

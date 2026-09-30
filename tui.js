@@ -2,13 +2,14 @@ import { Plugin } from "@opencode/plugin/tui";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { IPC_DIRECTORY } from "./ipc-path.js";
-import { wireFormNotifications } from "./form-notifier.js";
+import { createPendingFormsReader, wireFormNotifications } from "./form-notifier.js";
 import { createNotificationBatcher } from "./notification-batcher.js";
 import { latestAssistantReply, truncateText } from "./notification-message.js";
 import { createPermissionNotifier } from "./permission-notifier.js";
 import { createIdleRechecker, createSessionIdleCheck } from "./session-idle.js";
 import { startSessionIpc } from "./session-ipc.js";
 import { createPermissionErrorReporter, readSessionPermissions } from "./session-permissions.js";
+import { createRootSessionFilter } from "./root-session.js";
 
 const OPEN_SESSION_SCRIPT = fileURLToPath(new URL("./open-session.js", import.meta.url));
 const SESSION_ID_PATTERN = /^ses[A-Za-z0-9_-]+$/;
@@ -75,26 +76,25 @@ export default Plugin.define({
     const reportPermissionError = createPermissionErrorReporter({
       onError: (error) => console.error("OpenCode permission notification check failed:", error),
     });
+    const isRootSession = createRootSessionFilter(
+      (sessionID) => context.data.session.root(sessionID),
+      () => reportPermissionError(new Error("Session ancestry unavailable; notification suppressed")),
+    );
     const permissionNotifications = createPermissionNotifier({
       getPendingPermissions: (sessionID) => readSessionPermissions(context.data.session, sessionID),
       notify: (sessionID) => notifyForSession(sessionID, "等待权限批准"),
+      isRootSession,
       onError: reportPermissionError,
     });
 
-    async function getPendingForms(sessionID) {
-      const forms = context.data.session.form;
-      if (typeof forms?.sync !== "function" || typeof forms?.list !== "function") {
-        throw new TypeError("V2 session.form sync/list accessor is unavailable");
-      }
-      await forms.sync(sessionID, context.location);
-      return forms.list(sessionID, context.location);
-    }
+    const getPendingForms = createPendingFormsReader(context.data, context.location);
 
     const stopFormNotifications = wireFormNotifications({
       data: context.data,
       getPendingForms,
       notify: (sessionID) => notifyForSession(sessionID, "等待回答"),
       onError: () => console.error("OpenCode form notification check failed; pending state unavailable, alert suppressed"),
+      isRootSession,
     });
 
     // `session.execution.*` marks the end of one agent round, not the whole
@@ -118,11 +118,6 @@ export default Plugin.define({
       notify: (sessionID, status) => notifyForSession(sessionID, status),
       onError: (error) => console.error("OpenCode idle recheck failed:", error),
     });
-
-    function isRootSession(sessionID) {
-      const rootID = context.data.session.root(sessionID);
-      return !rootID || rootID === sessionID;
-    }
 
     const stop = [
       context.data.on("permission.asked", permissionNotifications.asked),
