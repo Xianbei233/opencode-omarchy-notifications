@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { unlinkSync } from "node:fs";
+import { lstatSync, unlinkSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { basename, isAbsolute, join } from "node:path";
 import { IPC_DIRECTORY } from "./ipc-path.js";
@@ -29,46 +29,32 @@ async function selectInExistingTui() {
       const candidate = join(ipcDirectory, name);
       if (!candidates.includes(candidate)) candidates.push(candidate);
     }
-  } catch {
-    // No live TUI IPC directory; launch a new TUI below.
+  } catch (error) {
+    return { outcome: error.code === "ENOENT" ? "absent" : "uncertain" };
   }
 
-  if (candidates.length === 0) return false;
-
-  const result = await new Promise((resolve) => {
-    let pending = candidates.length;
-    let settled = false;
-    const abort = new AbortController();
-    for (const candidate of candidates) {
-      requestSessionSelection(
-        candidate,
-        sessionID,
-        SOCKET_REQUEST_TIMEOUT_MS,
-        (socketPath) => {
-          try {
-            unlinkSync(socketPath);
-          } catch {
-            // The stale socket may already have been removed.
-          }
-        },
-        abort.signal,
-      ).then((response) => {
-        if (!settled && response) {
-          settled = true;
-          abort.abort();
-          resolve(response);
-          return;
-        }
-        if (--pending === 0 && !settled) {
-          settled = true;
-          resolve(null);
-        }
-      });
+  let declined = false;
+  for (const candidate of candidates.sort()) {
+    let original;
+    try {
+      original = lstatSync(candidate);
+      if (!original.isSocket()) return { outcome: "uncertain" };
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      return { outcome: "uncertain" };
     }
-  });
-
-  if (!result) return null;
-  return result;
+    const result = await requestSessionSelection(candidate, sessionID, SOCKET_REQUEST_TIMEOUT_MS, (socketPath) => {
+      try {
+        const current = lstatSync(socketPath);
+        if (current.isSocket() && current.dev === original.dev && current.ino === original.ino) unlinkSync(socketPath);
+      } catch {
+        // Cleanup is best effort; never remove a replacement socket.
+      }
+    });
+    if (result.outcome === "handled" || result.outcome === "uncertain") return result;
+    if (result.outcome === "declined") declined = true;
+  }
+  return { outcome: declined ? "declined" : "absent" };
 }
 
 function focusTerminal(listenOn, windowID) {
@@ -130,6 +116,11 @@ function launchSession() {
 }
 
 const selected = await selectInExistingTui();
-if (!selected || !(await focusTerminal(selected.kittyListenOn, selected.kittyWindowID))) {
+if (selected.outcome === "absent") {
   launchSession();
+} else if (selected.outcome === "handled") {
+  if (!(await focusTerminal(selected.kittyListenOn, selected.kittyWindowID))) process.exitCode = 1;
+} else {
+  console.error(`OpenCode session selection ${selected.outcome}; not opening another TUI`);
+  process.exitCode = 1;
 }

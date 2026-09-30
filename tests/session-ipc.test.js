@@ -68,8 +68,8 @@ test("does not route malformed or unavailable session IDs", async (t) => {
   });
 
   assert.equal(await ipc.ready, true);
-  assert.equal(await requestSessionSelection(ipc.socketPath, "not-a-session"), null);
-  assert.equal(await requestSessionSelection(ipc.socketPath, TEST_SESSION_ID), null);
+  assert.equal((await requestSessionSelection(ipc.socketPath, "not-a-session")).outcome, "declined");
+  assert.equal((await requestSessionSelection(ipc.socketPath, TEST_SESSION_ID)).outcome, "declined");
   assert.deepEqual(navigations, []);
 });
 
@@ -107,8 +107,8 @@ test("reports unreachable sockets without flagging live declines", async (t) => 
 
   writeFileSync(staleSocket, "stale");
   assert.equal(
-    await requestSessionSelection(staleSocket, TEST_SESSION_ID, 1000, (path) => unreachable.push(path)),
-    null,
+    (await requestSessionSelection(staleSocket, TEST_SESSION_ID, 1000, (path) => unreachable.push(path))).outcome,
+    "dead",
   );
   assert.deepEqual(unreachable, [staleSocket]);
 
@@ -124,8 +124,28 @@ test("reports unreachable sockets without flagging live declines", async (t) => 
 
   unreachable.length = 0;
   assert.equal(
-    await requestSessionSelection(liveSocket, TEST_SESSION_ID, 1000, (path) => unreachable.push(path)),
-    null,
+    (await requestSessionSelection(liveSocket, TEST_SESSION_ID, 1000, (path) => unreachable.push(path))).outcome,
+    "declined",
   );
   assert.deepEqual(unreachable, []);
+});
+
+test("navigation exceptions and sync errors are uncertain, never explicit declines", async (t) => {
+  const directory = temporaryDirectory();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  for (const failure of ["sync", "navigate"]) {
+    let navigations = 0;
+    const ipc = startSessionIpc({
+      data: { session: {
+        get: () => failure === "sync" ? undefined : { id: TEST_SESSION_ID },
+        sync: async () => { throw new Error("test sync failure"); },
+      } },
+      ui: { router: { navigate: () => { navigations++; throw new Error("test navigate failure"); } } },
+    }, directory);
+    try {
+      assert.equal(await ipc.ready, true);
+      assert.equal((await requestSessionSelection(ipc.socketPath, TEST_SESSION_ID)).outcome, "uncertain");
+      assert.equal(navigations, failure === "navigate" ? 1 : 0);
+    } finally { ipc.close(); }
+  }
 });

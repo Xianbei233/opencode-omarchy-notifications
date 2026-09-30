@@ -9,6 +9,7 @@ import { latestAssistantReply, truncateText } from "./notification-message.js";
 import { createPermissionNotifier } from "./permission-notifier.js";
 import { createIdleRechecker, createSessionIdleCheck } from "./session-idle.js";
 import { startSessionIpc } from "./session-ipc.js";
+import { readSessionPermissions } from "./session-permissions.js";
 
 const OPEN_SESSION_SCRIPT = fileURLToPath(new URL("./open-session.js", import.meta.url));
 const SESSION_ID_PATTERN = /^ses[A-Za-z0-9_-]+$/;
@@ -86,7 +87,7 @@ export default Plugin.define({
     }
 
     const permissionNotifications = createPermissionNotifier({
-      getPendingPermissions: (sessionID) => context.data.session.permission(sessionID),
+      getPendingPermissions: (sessionID) => readSessionPermissions(context.data.session, sessionID),
       notify: (sessionID) => notifyForSession(sessionID, "等待权限批准"),
       onError: (error) => console.error("OpenCode permission notification check failed:", error),
     });
@@ -114,7 +115,7 @@ export default Plugin.define({
     // idle with nothing pending; a still-running round notifies nothing.
     const isIdle = createSessionIdleCheck({
       store: context.data.session,
-      getPendingPermissions: (sessionID) => context.data.session.permission(sessionID),
+      getPendingPermissions: (sessionID) => readSessionPermissions(context.data.session, sessionID),
       getPendingForms,
     });
     const completionRecheck = createIdleRechecker({

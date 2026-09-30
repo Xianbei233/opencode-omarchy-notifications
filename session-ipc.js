@@ -46,9 +46,7 @@ export function startSessionIpc(context, directory = IPC_DIRECTORY) {
 
           let session = context.data.session.get(sessionID);
           if (!session) {
-            await context.data.session.sync(sessionID).catch((error) => {
-              console.error("Could not sync OpenCode session:", error);
-            });
+            await context.data.session.sync(sessionID);
             session = context.data.session.get(sessionID);
           }
           if (!session || clientClosed || closed) return { handled: false };
@@ -61,7 +59,7 @@ export function startSessionIpc(context, directory = IPC_DIRECTORY) {
           };
         } catch (error) {
           console.error("Could not select OpenCode session from notification:", error);
-          return { handled: false };
+          return { error: "selection failed" };
         }
       })().then((result) => {
         socket.end(`${JSON.stringify(result)}\n`);
@@ -110,10 +108,11 @@ export function requestSessionSelection(socketPath, sessionID, timeoutMs = 5000,
     let settled = false;
     let response = "";
     let socket;
-    const timeout = setTimeout(() => fail(), timeoutMs);
+    let connected = false;
+    const timeout = setTimeout(() => finish({ outcome: "uncertain" }), timeoutMs);
 
     function abort() {
-      finish(null);
+      finish({ outcome: "uncertain" });
     }
 
     function finish(result) {
@@ -125,41 +124,44 @@ export function requestSessionSelection(socketPath, sessionID, timeoutMs = 5000,
       resolveRequest(result);
     }
 
-    function fail() {
+    function fail(error) {
       if (settled) return;
+      const dead = !connected && (error?.code === "ECONNREFUSED" || error?.code === "ENOENT");
       try {
-        onUnreachable?.(socketPath);
+        if (dead) onUnreachable?.(socketPath);
       } catch {
         // Reporting an unreachable socket must never break the caller.
       }
-      finish(null);
+      finish({ outcome: dead ? "dead" : "uncertain" });
     }
 
-    if (signal?.aborted) return finish(null);
+    if (signal?.aborted) return abort();
     signal?.addEventListener("abort", abort, { once: true });
 
     try {
       socket = createConnection(socketPath);
-    } catch {
-      return fail();
+    } catch (error) {
+      return fail(error);
     }
 
     socket.on("connect", () => {
+      connected = true;
       socket.write(`${JSON.stringify({ sessionID })}\n`);
     });
     socket.on("data", (chunk) => {
       response += chunk.toString();
-      if (response.length > 4096) return finish(null);
+      if (response.length > 4096) return finish({ outcome: "uncertain" });
       const newline = response.indexOf("\n");
       if (newline < 0) return;
       try {
         const result = JSON.parse(response.slice(0, newline));
-        finish(result?.handled === true ? result : null);
+        finish(result?.handled === true ? { ...result, outcome: "handled" }
+          : result?.handled === false ? { outcome: "declined" } : { outcome: "uncertain" });
       } catch {
-        finish(null);
+        finish({ outcome: "uncertain" });
       }
     });
-    socket.on("error", () => fail());
+    socket.on("error", fail);
     socket.on("end", () => fail());
   });
 }
