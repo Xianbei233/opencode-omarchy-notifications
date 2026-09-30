@@ -215,3 +215,130 @@ test("claims a live TUI in parallel and prunes stale sockets", async (t) => {
   assert.equal(existsSync(staleSocket), false);
   assert.throws(() => readFileSync(capture), { code: "ENOENT" });
 });
+
+function stubKittyEnvironment(t) {
+  const originalKittyListenOn = process.env.KITTY_LISTEN_ON;
+  const originalKittyWindowID = process.env.KITTY_WINDOW_ID;
+  t.after(() => {
+    if (originalKittyListenOn === undefined) delete process.env.KITTY_LISTEN_ON;
+    else process.env.KITTY_LISTEN_ON = originalKittyListenOn;
+    if (originalKittyWindowID === undefined) delete process.env.KITTY_WINDOW_ID;
+    else process.env.KITTY_WINDOW_ID = originalKittyWindowID;
+  });
+  process.env.KITTY_LISTEN_ON = "unix:/tmp/kitty-test-stub";
+  process.env.KITTY_WINDOW_ID = "42";
+}
+
+function startTuiStub(t, ipcDirectory, sessionID, navigations) {
+  const ipc = startSessionIpc({
+    data: {
+      session: {
+        get: (id) => id === sessionID ? { id } : undefined,
+        sync: async () => {},
+      },
+    },
+    ui: {
+      router: {
+        navigate: (destination) => navigations.push(destination),
+      },
+    },
+  }, ipcDirectory);
+  t.after(() => ipc.close());
+  return ipc.ready;
+}
+
+async function runHelper(env, sessionID, project, ipcDirectory) {
+  const child = spawn(
+    process.execPath,
+    [HELPER, sessionID, project, ipcDirectory],
+    { env, stdio: "ignore" },
+  );
+  await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`helper exited ${code}`)));
+  });
+}
+
+test("launches a new TUI when focusing the Kitty window fails", async (t) => {
+  const root = mkdtempSync(join(TEMP_ROOT, "r-"));
+  const bin = join(root, "bin");
+  const runtime = join(root, "runtime");
+  const capture = join(root, "launcher-argv");
+  const project = join(root, "project");
+  const ipcDirectory = join(runtime, "opencode-omarchy-notifications");
+  const launcher = join(bin, "omarchy-launch-tui");
+  const kitty = join(bin, "kitty");
+  const sessionID = "ses_focusFallback123";
+  const navigations = [];
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(launcher, '#!/bin/sh\nprintf \'%s\\0\' "$@" > "$CAPTURE_FILE"\n');
+  chmodSync(launcher, 0o700);
+  writeFileSync(kitty, "#!/bin/sh\nexit 1\n");
+  chmodSync(kitty, 0o700);
+
+  stubKittyEnvironment(t);
+  assert.equal(await startTuiStub(t, ipcDirectory, sessionID, navigations), true);
+
+  const env = {
+    ...process.env,
+    XDG_RUNTIME_DIR: runtime,
+    CAPTURE_FILE: capture,
+    PATH: `${bin}:${process.env.PATH}`,
+  };
+  await runHelper(env, sessionID, project, ipcDirectory);
+
+  assert.deepEqual(navigations, [{ type: "session", sessionID }]);
+  assert.deepEqual(await waitForFile(capture), [
+    "--app-id=org.omarchy.agent",
+    "opencode",
+    "--session",
+    sessionID,
+    project,
+  ]);
+});
+
+test("does not launch another TUI when focusing the Kitty window succeeds", async (t) => {
+  const root = mkdtempSync(join(TEMP_ROOT, "r-"));
+  const bin = join(root, "bin");
+  const runtime = join(root, "runtime");
+  const capture = join(root, "launcher-argv");
+  const kittyCapture = join(root, "kitty-argv");
+  const project = join(root, "project");
+  const ipcDirectory = join(runtime, "opencode-omarchy-notifications");
+  const launcher = join(bin, "omarchy-launch-tui");
+  const kitty = join(bin, "kitty");
+  const sessionID = "ses_focusSuccess123";
+  const navigations = [];
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(launcher, '#!/bin/sh\nprintf \'%s\\0\' "$@" > "$CAPTURE_FILE"\n');
+  chmodSync(launcher, 0o700);
+  writeFileSync(kitty, '#!/bin/sh\nprintf \'%s\\0\' "$@" > "$KITTY_CAPTURE_FILE"\n');
+  chmodSync(kitty, 0o700);
+
+  stubKittyEnvironment(t);
+  assert.equal(await startTuiStub(t, ipcDirectory, sessionID, navigations), true);
+
+  const env = {
+    ...process.env,
+    XDG_RUNTIME_DIR: runtime,
+    CAPTURE_FILE: capture,
+    KITTY_CAPTURE_FILE: kittyCapture,
+    PATH: `${bin}:${process.env.PATH}`,
+  };
+  await runHelper(env, sessionID, project, ipcDirectory);
+
+  assert.deepEqual(navigations, [{ type: "session", sessionID }]);
+  assert.deepEqual(await waitForFile(kittyCapture), [
+    "@",
+    "--to",
+    "unix:/tmp/kitty-test-stub",
+    "focus-window",
+    "--match",
+    "id:42",
+  ]);
+  assert.throws(() => readFileSync(capture), { code: "ENOENT" });
+});

@@ -13,6 +13,7 @@ if (!/^ses[A-Za-z0-9_-]+$/.test(sessionID)) {
 
 const SOCKET_NAME_PATTERN = /^t-\d+-[a-f0-9]+\.sock$/;
 const SOCKET_REQUEST_TIMEOUT_MS = 1500;
+const KITTY_FOCUS_TIMEOUT_MS = 3000;
 const thirdArgument = process.argv[3] ?? "";
 const legacyAction = Boolean(process.argv[5]) && SOCKET_NAME_PATTERN.test(basename(thirdArgument));
 const directory = legacyAction ? process.argv[4] ?? "" : thirdArgument;
@@ -66,20 +67,51 @@ async function selectInExistingTui() {
     }
   });
 
-  if (!result) return false;
-  focusTerminal(result.kittyListenOn, result.kittyWindowID);
-  return true;
+  if (!result) return null;
+  return result;
 }
 
 function focusTerminal(listenOn, windowID) {
-  if (!listenOn || !/^\d+$/.test(windowID ?? "")) return;
-  const child = spawn(
-    "kitty",
-    ["@", "--to", listenOn, "focus-window", "--match", `id:${windowID}`],
-    { detached: true, stdio: "ignore" },
-  );
-  child.on("error", (error) => console.error("Could not focus OpenCode terminal:", error));
-  child.unref();
+  // Without Kitty metadata there is nothing to focus; the handled TUI
+  // already navigated, so this does not need a fresh TUI.
+  if (!listenOn || !/^\d+$/.test(windowID ?? "")) return Promise.resolve(true);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (focused) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(focused);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(false);
+    }, KITTY_FOCUS_TIMEOUT_MS);
+    let child;
+    try {
+      child = spawn(
+        "kitty",
+        ["@", "--to", listenOn, "focus-window", "--match", `id:${windowID}`],
+        { detached: true, stdio: "ignore" },
+      );
+    } catch (error) {
+      console.error("Could not focus OpenCode terminal:", error);
+      return finish(false);
+    }
+    child.on("error", (error) => {
+      console.error("Could not focus OpenCode terminal:", error);
+      finish(false);
+    });
+    child.on("exit", (code, signal) => {
+      if (code !== 0) {
+        console.error(`Could not focus OpenCode terminal: kitty exited ${code ?? signal}`);
+        return finish(false);
+      }
+      finish(true);
+    });
+    child.unref();
+  });
 }
 
 function launchSession() {
@@ -97,4 +129,7 @@ function launchSession() {
   child.unref();
 }
 
-if (!(await selectInExistingTui())) launchSession();
+const selected = await selectInExistingTui();
+if (!selected || !(await focusTerminal(selected.kittyListenOn, selected.kittyWindowID))) {
+  launchSession();
+}
