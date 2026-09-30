@@ -103,12 +103,12 @@ export function startSessionIpc(context, directory = IPC_DIRECTORY) {
   };
 }
 
-export function requestSessionSelection(socketPath, sessionID, timeoutMs = 5000) {
+export function requestSessionSelection(socketPath, sessionID, timeoutMs = 5000, onUnreachable) {
   return new Promise((resolveRequest) => {
     let settled = false;
     let response = "";
     let socket;
-    const timeout = setTimeout(() => finish(null), timeoutMs);
+    const timeout = setTimeout(() => fail(), timeoutMs);
 
     function finish(result) {
       if (settled) return;
@@ -118,10 +118,20 @@ export function requestSessionSelection(socketPath, sessionID, timeoutMs = 5000)
       resolveRequest(result);
     }
 
+    function fail() {
+      if (settled) return;
+      try {
+        onUnreachable?.(socketPath);
+      } catch {
+        // Reporting an unreachable socket must never break the caller.
+      }
+      finish(null);
+    }
+
     try {
       socket = createConnection(socketPath);
     } catch {
-      return finish(null);
+      return fail();
     }
 
     socket.on("connect", () => {
@@ -139,7 +149,7 @@ export function requestSessionSelection(socketPath, sessionID, timeoutMs = 5000)
         finish(null);
       }
     });
-    socket.on("error", () => finish(null));
-    socket.on("end", () => finish(null));
+    socket.on("error", () => fail());
+    socket.on("end", () => fail());
   });
 }

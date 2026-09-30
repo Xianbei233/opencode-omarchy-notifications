@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { createServer } from "node:net";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -70,4 +71,61 @@ test("does not route malformed or unavailable session IDs", async (t) => {
   assert.equal(await requestSessionSelection(ipc.socketPath, "not-a-session"), null);
   assert.equal(await requestSessionSelection(ipc.socketPath, TEST_SESSION_ID), null);
   assert.deepEqual(navigations, []);
+});
+
+test("removes its socket file when the IPC server closes", async (t) => {
+  const directory = temporaryDirectory();
+  const context = {
+    data: {
+      session: {
+        get: () => undefined,
+        sync: async () => {},
+      },
+    },
+    ui: {
+      router: {
+        navigate: () => {},
+      },
+    },
+  };
+  const ipc = startSessionIpc(context, directory);
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  assert.equal(await ipc.ready, true);
+  assert.equal(existsSync(ipc.socketPath), true);
+
+  ipc.close();
+
+  assert.equal(existsSync(ipc.socketPath), false);
+});
+
+test("reports unreachable sockets without flagging live declines", async (t) => {
+  const directory = temporaryDirectory();
+  const staleSocket = join(directory, "t-1-deadbeef.sock");
+  const unreachable = [];
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  writeFileSync(staleSocket, "stale");
+  assert.equal(
+    await requestSessionSelection(staleSocket, TEST_SESSION_ID, 1000, (path) => unreachable.push(path)),
+    null,
+  );
+  assert.deepEqual(unreachable, [staleSocket]);
+
+  const liveSocket = join(directory, "t-2-abcdef01.sock");
+  const server = createServer((socket) => {
+    socket.once("data", () => socket.end('{"handled":false}\n'));
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(liveSocket, resolve);
+  });
+  t.after(() => server.close());
+
+  unreachable.length = 0;
+  assert.equal(
+    await requestSessionSelection(liveSocket, TEST_SESSION_ID, 1000, (path) => unreachable.push(path)),
+    null,
+  );
+  assert.deepEqual(unreachable, []);
 });
