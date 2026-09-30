@@ -78,7 +78,15 @@ export default Plugin.define({
     });
 
     const formNotifications = createFormNotifier({
-      getPendingForms: (sessionID) => context.data.session.question?.(sessionID),
+      // The state module exposes pending forms as session.form.list(id); probe
+      // the plausible shapes so an older plugin surface still resolves.
+      getPendingForms: (sessionID) => {
+        const session = context.data.session;
+        const forms = typeof session.form === "function"
+          ? session.form(sessionID)
+          : session.form?.list?.(sessionID);
+        return forms ?? session.question?.(sessionID);
+      },
       isSessionAlive: (sessionID) => Boolean(context.data.session.get(sessionID)),
       notify: (sessionID) => notifyForSession(sessionID, "等待回答"),
       onError: (error) => console.error("OpenCode form notification check failed:", error),
