@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { IPC_DIRECTORY } from "./ipc-path.js";
 import { createFormNotifier } from "./form-notifier.js";
 import { createKittyFocus } from "./kitty-focus.js";
+import { createNotificationBatcher } from "./notification-batcher.js";
 import { createPermissionNotifier } from "./permission-notifier.js";
 import { startSessionIpc } from "./session-ipc.js";
 
@@ -15,7 +16,7 @@ export default Plugin.define({
   setup(context) {
     const ipc = startSessionIpc(context);
 
-    function send(title, message, sessionID, directory) {
+    function send({ title, message, sessionID, directory }) {
       const args = ["--app-name", "OpenCode", "-u", "normal", "-t", "10000", title, message];
       if (typeof sessionID === "string" && SESSION_ID_PATTERN.test(sessionID)) {
         args.push(
@@ -44,11 +45,13 @@ export default Plugin.define({
 
     // Skip the desktop notification while the Kitty window hosting this TUI
     // already has focus; anything we cannot determine counts as unfocused.
-    function notify(title, message, sessionID, directory) {
-      void focus.focused().then((isFocused) => {
-        if (!isFocused) send(title, message, sessionID, directory);
-      });
-    }
+    const batcher = createNotificationBatcher({
+      send: ({ title, message, sessionID, directory }) => {
+        void focus.focused().then((isFocused) => {
+          if (!isFocused) send({ title, message, sessionID, directory });
+        });
+      },
+    });
 
     function notifyForSession(sessionID, status) {
       const session = context.data.session.get(sessionID);
@@ -59,7 +62,13 @@ export default Plugin.define({
         : `会话 ${sessionID.slice(-8)}`;
       const directory = session?.directory || session?.location?.directory || context.location?.directory;
 
-      notify(`${agent} · ${status}`, `任务：${task}`, sessionID, directory);
+      batcher.notify({
+        sessionID,
+        agent,
+        status,
+        message: `任务：${task}`,
+        directory,
+      });
     }
 
     const permissionNotifications = createPermissionNotifier({
@@ -106,6 +115,7 @@ export default Plugin.define({
     return () => {
       permissionNotifications.dispose();
       formNotifications.dispose();
+      batcher.dispose();
       stop.forEach((unsubscribe) => unsubscribe());
       ipc.close();
     };
