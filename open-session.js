@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { unlinkSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { basename, isAbsolute, join } from "node:path";
 import { IPC_DIRECTORY } from "./ipc-path.js";
@@ -11,6 +12,7 @@ if (!/^ses[A-Za-z0-9_-]+$/.test(sessionID)) {
 }
 
 const SOCKET_NAME_PATTERN = /^t-\d+-[a-f0-9]+\.sock$/;
+const SOCKET_REQUEST_TIMEOUT_MS = 1500;
 const thirdArgument = process.argv[3] ?? "";
 const legacyAction = Boolean(process.argv[5]) && SOCKET_NAME_PATTERN.test(basename(thirdArgument));
 const directory = legacyAction ? process.argv[4] ?? "" : thirdArgument;
@@ -30,14 +32,43 @@ async function selectInExistingTui() {
     // No live TUI IPC directory; launch a new TUI below.
   }
 
-  for (const candidate of candidates) {
-    const result = await requestSessionSelection(candidate, sessionID);
-    if (!result) continue;
-    focusTerminal(result.kittyListenOn, result.kittyWindowID);
-    return true;
-  }
+  if (candidates.length === 0) return false;
 
-  return false;
+  const result = await new Promise((resolve) => {
+    let pending = candidates.length;
+    let settled = false;
+    const abort = new AbortController();
+    for (const candidate of candidates) {
+      requestSessionSelection(
+        candidate,
+        sessionID,
+        SOCKET_REQUEST_TIMEOUT_MS,
+        (socketPath) => {
+          try {
+            unlinkSync(socketPath);
+          } catch {
+            // The stale socket may already have been removed.
+          }
+        },
+        abort.signal,
+      ).then((response) => {
+        if (!settled && response) {
+          settled = true;
+          abort.abort();
+          resolve(response);
+          return;
+        }
+        if (--pending === 0 && !settled) {
+          settled = true;
+          resolve(null);
+        }
+      });
+    }
+  });
+
+  if (!result) return false;
+  focusTerminal(result.kittyListenOn, result.kittyWindowID);
+  return true;
 }
 
 function focusTerminal(listenOn, windowID) {

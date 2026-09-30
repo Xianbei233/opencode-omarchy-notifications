@@ -105,17 +105,22 @@ export function startSessionIpc(context, directory = IPC_DIRECTORY) {
   };
 }
 
-export function requestSessionSelection(socketPath, sessionID, timeoutMs = 5000, onUnreachable) {
+export function requestSessionSelection(socketPath, sessionID, timeoutMs = 5000, onUnreachable, signal) {
   return new Promise((resolveRequest) => {
     let settled = false;
     let response = "";
     let socket;
     const timeout = setTimeout(() => fail(), timeoutMs);
 
+    function abort() {
+      finish(null);
+    }
+
     function finish(result) {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
       socket?.destroy();
       resolveRequest(result);
     }
@@ -129,6 +134,9 @@ export function requestSessionSelection(socketPath, sessionID, timeoutMs = 5000,
       }
       finish(null);
     }
+
+    if (signal?.aborted) return finish(null);
+    signal?.addEventListener("abort", abort, { once: true });
 
     try {
       socket = createConnection(socketPath);
