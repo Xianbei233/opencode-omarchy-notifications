@@ -7,6 +7,7 @@ import { createKittyFocus } from "./kitty-focus.js";
 import { createNotificationBatcher } from "./notification-batcher.js";
 import { latestAssistantReply, truncateText } from "./notification-message.js";
 import { createPermissionNotifier } from "./permission-notifier.js";
+import { createIdleRechecker, createSessionIdleCheck } from "./session-idle.js";
 import { startSessionIpc } from "./session-ipc.js";
 
 const OPEN_SESSION_SCRIPT = fileURLToPath(new URL("./open-session.js", import.meta.url));
@@ -90,19 +91,36 @@ export default Plugin.define({
       onError: (error) => console.error("OpenCode permission notification check failed:", error),
     });
 
+    // The state module exposes pending forms as session.form.list(id); probe
+    // the plausible shapes so an older plugin surface still resolves.
+    function getPendingForms(sessionID) {
+      const session = context.data.session;
+      const forms = typeof session.form === "function"
+        ? session.form(sessionID)
+        : session.form?.list?.(sessionID);
+      return forms ?? session.question?.(sessionID);
+    }
+
     const formNotifications = createFormNotifier({
-      // The state module exposes pending forms as session.form.list(id); probe
-      // the plausible shapes so an older plugin surface still resolves.
-      getPendingForms: (sessionID) => {
-        const session = context.data.session;
-        const forms = typeof session.form === "function"
-          ? session.form(sessionID)
-          : session.form?.list?.(sessionID);
-        return forms ?? session.question?.(sessionID);
-      },
+      getPendingForms,
       isSessionAlive: (sessionID) => Boolean(context.data.session.get(sessionID)),
       notify: (sessionID) => notifyForSession(sessionID, "等待回答"),
       onError: (error) => console.error("OpenCode form notification check failed:", error),
+    });
+
+    // `session.execution.*` marks the end of one agent round, not the whole
+    // task — a round also ends when the agent pauses for a permission reply or
+    // a question form. Only notify once the recheck finds the session truly
+    // idle with nothing pending; a still-running round notifies nothing.
+    const isIdle = createSessionIdleCheck({
+      store: context.data.session,
+      getPendingPermissions: (sessionID) => context.data.session.permission(sessionID),
+      getPendingForms,
+    });
+    const completionRecheck = createIdleRechecker({
+      isIdle,
+      notify: (sessionID, status) => notifyForSession(sessionID, status),
+      onError: (error) => console.error("OpenCode idle recheck failed:", error),
     });
 
     function isRootSession(sessionID) {
@@ -118,17 +136,17 @@ export default Plugin.define({
       context.data.on("form.cancelled", formNotifications.closed),
       context.data.on("session.execution.succeeded", (event) => {
         if (isRootSession(event.data.sessionID)) {
-          notifyForSession(event.data.sessionID, "任务完成");
+          completionRecheck.recheck(event.data.sessionID, "任务完成");
         }
       }),
       context.data.on("session.execution.failed", (event) => {
         if (isRootSession(event.data.sessionID)) {
-          notifyForSession(event.data.sessionID, "执行失败");
+          completionRecheck.recheck(event.data.sessionID, "执行失败");
         }
       }),
       context.data.on("session.execution.interrupted", (event) => {
         if (isRootSession(event.data.sessionID)) {
-          notifyForSession(event.data.sessionID, "任务中断");
+          completionRecheck.recheck(event.data.sessionID, "任务中断");
         }
       }),
     ];
@@ -136,6 +154,7 @@ export default Plugin.define({
     return () => {
       permissionNotifications.dispose();
       formNotifications.dispose();
+      completionRecheck.dispose();
       batcher.dispose();
       stop.forEach((unsubscribe) => unsubscribe());
       ipc.close();
