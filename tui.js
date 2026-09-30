@@ -5,6 +5,7 @@ import { IPC_DIRECTORY } from "./ipc-path.js";
 import { createFormNotifier } from "./form-notifier.js";
 import { createKittyFocus } from "./kitty-focus.js";
 import { createNotificationBatcher } from "./notification-batcher.js";
+import { latestAssistantReply, truncateText } from "./notification-message.js";
 import { createPermissionNotifier } from "./permission-notifier.js";
 import { startSessionIpc } from "./session-ipc.js";
 
@@ -53,20 +54,32 @@ export default Plugin.define({
       },
     });
 
+    // Reads the cached session messages; any failure just omits the reply line.
+    function readMessages(sessionID) {
+      try {
+        const messages = context.data.session.message;
+        return typeof messages === "function" ? messages(sessionID) : messages?.list?.(sessionID);
+      } catch {
+        return undefined;
+      }
+    }
+
     function notifyForSession(sessionID, status) {
       const session = context.data.session.get(sessionID);
       const agent = session?.agent?.trim() || "OpenCode";
       const sessionTitle = session?.title?.trim();
       const task = sessionTitle && sessionTitle !== "New Session"
-        ? sessionTitle
+        ? truncateText(sessionTitle, 40)
         : `会话 ${sessionID.slice(-8)}`;
       const directory = session?.directory || session?.location?.directory || context.location?.directory;
+      const reply = latestAssistantReply(readMessages(sessionID));
+      const message = reply ? `任务：${task}\n回复：${reply}` : `任务：${task}`;
 
       batcher.notify({
         sessionID,
         agent,
         status,
-        message: `任务：${task}`,
+        message,
         directory,
       });
     }
