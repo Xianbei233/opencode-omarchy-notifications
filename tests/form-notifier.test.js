@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createFormNotifier } from "../form-notifier.js";
+import { wireFormNotifications } from "../form-notifier.js";
+import { createNotificationBatcher } from "../notification-batcher.js";
 
 const SESSION_ID = "ses_formTest123";
 const FORM_ID = "frm_formTest123";
@@ -9,101 +10,90 @@ function pause(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function created(formID = FORM_ID, sessionID = SESSION_ID) {
-  return { data: { form: { id: formID, sessionID } } };
+function eventData(id = FORM_ID) {
+  return { id, sessionID: SESSION_ID, type: "question", data: {} };
 }
 
-function closedEvent(formID = FORM_ID, sessionID = SESSION_ID) {
-  return { data: { id: formID, sessionID } };
+function harness({ forms, errors = [], delayMs = 500 }) {
+  const listeners = new Map();
+  const sent = [];
+  const batcher = createNotificationBatcher({
+    send: (notification) => sent.push(notification),
+    windowMs: 2,
+  });
+  const stop = wireFormNotifications({
+    data: { on: (type, handler) => {
+      listeners.set(type, handler);
+      return () => listeners.delete(type);
+    } },
+    getPendingForms: async (sessionID) => {
+      assert.equal(sessionID, SESSION_ID);
+      return forms();
+    },
+    notify: (sessionID) => batcher.notify({
+      sessionID,
+      agent: "build",
+      status: "等待回答",
+      message: "question pending",
+    }),
+    onError: (error) => errors.push(error),
+    delayMs,
+  });
+  return { listeners, sent, stop: () => { stop(); batcher.dispose(); } };
 }
 
-test("does not notify when the form is no longer pending", async () => {
-  const notifications = [];
-  const notifier = createFormNotifier({
-    getPendingForms: () => [],
-    notify: (id) => notifications.push(id),
-    delayMs: 1,
-  });
-
-  notifier.created(created());
-  await pause(20);
-  notifier.dispose();
-
-  assert.deepEqual(notifications, []);
+test("V2 form.created event routes into delayed pending check and batch sender", async () => {
+  const h = harness({ forms: () => [{ id: FORM_ID, sessionID: SESSION_ID, type: "question", data: {} }] });
+  assert.deepEqual([...h.listeners.keys()], ["form.created", "form.replied", "form.cancelled"]);
+  h.listeners.get("form.created")({ type: "form.created", data: eventData() });
+  await pause(550);
+  h.stop();
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.sent[0].sessionID, SESSION_ID);
+  assert.match(h.sent[0].title, /等待回答/);
 });
 
-test("notifies once only when that exact form remains pending", async () => {
-  const notifications = [];
-  let readCount = 0;
-  const notifier = createFormNotifier({
-    getPendingForms: () => {
-      readCount += 1;
-      return [{ id: "frm_a_different_form" }, { id: FORM_ID }];
-    },
-    notify: (id) => notifications.push(id),
-    delayMs: 1,
-  });
-
-  notifier.created(created());
-  notifier.created(created());
-  await pause(20);
-  notifier.created(created());
-  await pause(20);
-  notifier.dispose();
-
-  assert.equal(readCount, 1);
-  assert.deepEqual(notifications, [SESSION_ID]);
+test("replied or cancelled forms are suppressed before the delayed check", async (t) => {
+  for (const type of ["form.replied", "form.cancelled"]) {
+    await t.test(type, async () => {
+      let reads = 0;
+      const h = harness({ forms: () => { reads++; return [{ id: FORM_ID }]; }, delayMs: 10 });
+      h.listeners.get("form.created")({ data: eventData() });
+      h.listeners.get(type)({ data: { id: FORM_ID, sessionID: SESSION_ID } });
+      await pause(20);
+      h.stop();
+      assert.equal(reads, 0);
+      assert.deepEqual(h.sent, []);
+    });
+  }
 });
 
-test("cancels a form that is replied to before the pending-state check", async () => {
-  const notifications = [];
-  let readCount = 0;
-  const notifier = createFormNotifier({
-    getPendingForms: () => {
-      readCount += 1;
-      return [{ id: FORM_ID }];
-    },
-    notify: (id) => notifications.push(id),
-    delayMs: 10,
-  });
-
-  notifier.created(created());
-  notifier.closed(closedEvent());
-  await pause(10);
-  notifier.dispose();
-
-  assert.equal(readCount, 0);
-  assert.deepEqual(notifications, []);
+test("answered forms absent from the pending list do not notify", async () => {
+  const h = harness({ forms: () => [], delayMs: 1 });
+  h.listeners.get("form.created")({ data: eventData() });
+  await pause(20);
+  h.stop();
+  assert.deepEqual(h.sent, []);
 });
 
-test("cancels a form that is cancelled before the pending-state check", async () => {
-  const notifications = [];
-  const notifier = createFormNotifier({
-    getPendingForms: () => [{ id: FORM_ID }],
-    notify: (id) => notifications.push(id),
-    delayMs: 10,
-  });
-
-  notifier.created(created());
-  notifier.closed(closedEvent());
-  await pause(20);
-  notifier.dispose();
-
-  assert.deepEqual(notifications, []);
+test("missing or malformed pending accessor is visible and fails closed", async (t) => {
+  for (const [name, forms] of [["missing", () => undefined], ["throws", () => { throw Error("private details"); }]]) {
+    await t.test(name, async () => {
+      const errors = [];
+      const h = harness({ forms, errors, delayMs: 1 });
+      h.listeners.get("form.created")({ data: eventData() });
+      await pause(20);
+      h.stop();
+      assert.equal(errors.length, 1);
+      assert.deepEqual(h.sent, []);
+    });
+  }
 });
 
-test("falls back to the session still existing when no pending-form list is available", async () => {
-  const notifications = [];
-  const notifier = createFormNotifier({
-    getPendingForms: () => undefined,
-    isSessionAlive: (id) => id === SESSION_ID,
-    notify: (id) => notifications.push(id),
-    delayMs: 1,
-  });
-
-  notifier.created(created());
+test("created event with legacy nested payload is ignored rather than guessed", async () => {
+  const h = harness({ forms: () => [{ id: FORM_ID }], delayMs: 1 });
+  h.listeners.get("form.created")({ data: { form: eventData() } });
   await pause(20);
-  notifier.dispose();
-
-  assert.deepEqual(notifications, [SESSION_ID]);
+  h.stop();
+  assert.deepEqual(h.sent, []);
 });

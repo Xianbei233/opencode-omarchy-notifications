@@ -2,7 +2,7 @@ import { Plugin } from "@opencode/plugin/tui";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { IPC_DIRECTORY } from "./ipc-path.js";
-import { createFormNotifier } from "./form-notifier.js";
+import { wireFormNotifications } from "./form-notifier.js";
 import { createNotificationBatcher } from "./notification-batcher.js";
 import { latestAssistantReply, truncateText } from "./notification-message.js";
 import { createPermissionNotifier } from "./permission-notifier.js";
@@ -81,21 +81,20 @@ export default Plugin.define({
       onError: reportPermissionError,
     });
 
-    // The state module exposes pending forms as session.form.list(id); probe
-    // the plausible shapes so an older plugin surface still resolves.
-    function getPendingForms(sessionID) {
-      const session = context.data.session;
-      const forms = typeof session.form === "function"
-        ? session.form(sessionID)
-        : session.form?.list?.(sessionID);
-      return forms ?? session.question?.(sessionID);
+    async function getPendingForms(sessionID) {
+      const forms = context.data.session.form;
+      if (typeof forms?.sync !== "function" || typeof forms?.list !== "function") {
+        throw new TypeError("V2 session.form sync/list accessor is unavailable");
+      }
+      await forms.sync(sessionID, context.location);
+      return forms.list(sessionID, context.location);
     }
 
-    const formNotifications = createFormNotifier({
+    const stopFormNotifications = wireFormNotifications({
+      data: context.data,
       getPendingForms,
-      isSessionAlive: (sessionID) => Boolean(context.data.session.get(sessionID)),
       notify: (sessionID) => notifyForSession(sessionID, "等待回答"),
-      onError: (error) => console.error("OpenCode form notification check failed:", error),
+      onError: () => console.error("OpenCode form notification check failed; pending state unavailable, alert suppressed"),
     });
 
     // `session.execution.*` marks the end of one agent round, not the whole
@@ -106,7 +105,13 @@ export default Plugin.define({
       store: context.data.session,
       onError: reportPermissionError,
       getPendingPermissions: (sessionID) => readSessionPermissions(context.data.session, sessionID),
-      getPendingForms,
+      getPendingForms: (sessionID) => {
+        const list = context.data.session.form?.list;
+        if (typeof list !== "function") throw new TypeError("V2 session.form.list accessor is unavailable");
+        const forms = list(sessionID, context.location);
+        if (!Array.isArray(forms)) throw new TypeError("Pending form cache is unavailable");
+        return forms;
+      },
     });
     const completionRecheck = createIdleRechecker({
       isIdle,
@@ -122,9 +127,6 @@ export default Plugin.define({
     const stop = [
       context.data.on("permission.asked", permissionNotifications.asked),
       context.data.on("permission.replied", permissionNotifications.replied),
-      context.data.on("form.created", formNotifications.created),
-      context.data.on("form.replied", formNotifications.closed),
-      context.data.on("form.cancelled", formNotifications.closed),
       context.data.on("session.execution.succeeded", (event) => {
         if (isRootSession(event.data.sessionID)) {
           completionRecheck.recheck(event.data.sessionID, "任务完成");
@@ -144,7 +146,7 @@ export default Plugin.define({
 
     return () => {
       permissionNotifications.dispose();
-      formNotifications.dispose();
+      stopFormNotifications();
       completionRecheck.dispose();
       batcher.dispose();
       stop.forEach((unsubscribe) => unsubscribe());

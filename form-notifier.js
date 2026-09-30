@@ -5,13 +5,13 @@ const RESOLVE_DEDUPE_WINDOW_MS = 60_000;
 // instantly answered or cancelled prompts never reach the desktop.
 export function createFormNotifier({
   getPendingForms,
-  isSessionAlive = () => true,
   notify,
   onError = console.error,
   delayMs = 500,
 }) {
   const timers = new Map();
   const notified = new Set();
+  const checking = new Set();
   const recentlyClosed = new Map();
   let disposed = false;
 
@@ -21,42 +21,30 @@ export function createFormNotifier({
     }
   }
 
-  function stillPending(sessionID, formID) {
-    if (typeof getPendingForms === "function") {
-      try {
-        const forms = getPendingForms(sessionID);
-        if (Array.isArray(forms)) {
-          return forms.some((form) => (form?.id ?? form) === formID);
-        }
-      } catch (error) {
-        onError(error);
+  async function notifyIfPending(sessionID, formID) {
+    if (disposed || recentlyClosed.has(formID) || notified.has(formID) || checking.has(formID)) return;
+    checking.add(formID);
+    try {
+      const forms = await getPendingForms(sessionID);
+      if (!Array.isArray(forms)) {
+        onError(new TypeError("Pending forms unavailable or malformed"));
+        return;
       }
-    }
-    // The state API has no form listing or it failed; fall back to the
-    // session still existing so a live form is never dropped.
-    try {
-      return isSessionAlive(sessionID) !== false;
-    } catch (error) {
-      onError(error);
-      return false;
-    }
-  }
+      if (disposed || recentlyClosed.has(formID) || notified.has(formID)) return;
+      if (!forms.some((form) => form?.id === formID)) return;
 
-  function notifyIfPending(sessionID, formID) {
-    if (disposed || recentlyClosed.has(formID) || notified.has(formID)) return;
-    if (!stillPending(sessionID, formID)) return;
-
-    try {
       notify(sessionID);
       notified.add(formID);
     } catch (error) {
       onError(error);
+    } finally {
+      checking.delete(formID);
     }
   }
 
   function created(event) {
-    const formID = event?.data?.form?.id;
-    const sessionID = event?.data?.form?.sessionID;
+    const formID = event?.data?.id;
+    const sessionID = event?.data?.sessionID;
     if (typeof sessionID !== "string" || typeof formID !== "string" || !formID) return;
 
     pruneClosed();
@@ -64,7 +52,7 @@ export function createFormNotifier({
 
     const timer = setTimeout(() => {
       timers.delete(formID);
-      notifyIfPending(sessionID, formID);
+      void notifyIfPending(sessionID, formID);
     }, delayMs);
     timers.set(formID, timer);
   }
@@ -86,8 +74,24 @@ export function createFormNotifier({
     for (const timer of timers.values()) clearTimeout(timer);
     timers.clear();
     notified.clear();
+    checking.clear();
     recentlyClosed.clear();
   }
 
   return { created, closed, dispose };
+}
+
+// Keep the V2 event names and payload routing together with the delayed
+// pending-state check so event-contract tests cover the complete path.
+export function wireFormNotifications({ data, getPendingForms, notify, onError, delayMs }) {
+  const notifier = createFormNotifier({ getPendingForms, notify, onError, delayMs });
+  const stop = [
+    data.on("form.created", notifier.created),
+    data.on("form.replied", notifier.closed),
+    data.on("form.cancelled", notifier.closed),
+  ];
+  return () => {
+    notifier.dispose();
+    stop.forEach((unsubscribe) => unsubscribe());
+  };
 }
