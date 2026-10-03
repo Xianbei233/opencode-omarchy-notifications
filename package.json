@@ -7,5 +7,8 @@
   },
   "exports": {
     "./tui": "./tui.js"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.0.20"
   }
 }

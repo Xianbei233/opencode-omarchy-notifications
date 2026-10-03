@@ -103,10 +103,17 @@ export function createIdleRechecker({ isIdle, notify, onError = console.error, d
   const timers = new Map();
   let disposed = false;
 
-  function recheck(sessionID, status) {
-    if (disposed || typeof sessionID !== "string" || !sessionID || timers.has(sessionID)) return;
+  function recheck(sessionID, status, executionID) {
+    if (disposed || typeof sessionID !== "string" || !sessionID) return;
+    if (timers.has(sessionID)) {
+      const pending = timers.get(sessionID);
+      pending.status = status;
+      pending.executionID = executionID;
+      return;
+    }
 
-    const timer = setTimeout(() => {
+    const pending = { status, executionID, timer: undefined };
+    pending.timer = setTimeout(() => {
       timers.delete(sessionID);
       if (disposed) return;
 
@@ -120,20 +127,20 @@ export function createIdleRechecker({ isIdle, notify, onError = console.error, d
       if (!idle) return;
 
       try {
-        notify(sessionID, status);
+        notify(sessionID, pending.status, pending.executionID);
       } catch (error) {
         onError(error);
       }
     }, delayMs);
-    timer.unref?.();
-    timers.set(sessionID, timer);
+    pending.timer.unref?.();
+    timers.set(sessionID, pending);
   }
 
   function dispose() {
     disposed = true;
-    for (const timer of timers.values()) clearTimeout(timer);
+    for (const pending of timers.values()) clearTimeout(pending.timer);
     timers.clear();
   }
 
-  return { recheck, dispose };
+  return { recheck, dispose, isIdle };
 }

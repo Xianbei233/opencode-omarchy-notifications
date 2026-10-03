@@ -11,6 +11,8 @@ A local OpenCode V2 CLI/TUI plugin that sends Omarchy desktop notifications for 
 
 Notifications contain the agent name and session title, not the prompt or response text.
 
+Completion alerts coordinate with the `local.session-rename` plugin through its V2 `local-session-rename` RPC, keyed by the exact top-level `id` on each public execution event. A late terminal state for an older execution cannot release a newer alert. After a bounded terminal-state wait, the session and pending permission/form caches are refreshed before notifying. Keep both plugins loaded in the same OpenCode server; if the RPC/plugin is unavailable or times out, the notification falls back to the cached title. Permission and question alerts do not wait.
+
 ## Requirements
 
 - OpenCode V2 with CLI plugin support.

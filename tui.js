@@ -1,4 +1,4 @@
-import { Plugin } from "@opencode/plugin/tui";
+import { define as definePlugin } from "@opencode/plugin/tui/plugin";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { IPC_DIRECTORY } from "./ipc-path.js";
@@ -10,14 +10,13 @@ import { createIdleRechecker, createSessionIdleCheck } from "./session-idle.js";
 import { startSessionIpc } from "./session-ipc.js";
 import { createPermissionErrorReporter, readSessionPermissions } from "./session-permissions.js";
 import { createRootSessionFilter } from "./root-session.js";
+import { RenameRPC } from "./rename-rpc.js";
 
 const OPEN_SESSION_SCRIPT = fileURLToPath(new URL("./open-session.js", import.meta.url));
 const SESSION_ID_PATTERN = /^ses[A-Za-z0-9_-]+$/;
 
-export default Plugin.define({
-  id: "opencode-omarchy-notifications",
-  setup(context) {
-    const ipc = startSessionIpc(context);
+export async function setup(context, { send: sendOverride, completionDelayMs = 800, renameWaitMs = 245_000, raceRetryMs = 1_000, batchWindowMs = 2_000, pendingDelayMs = 500, startIpc = startSessionIpc } = {}) {
+    const ipc = startIpc(context);
 
     function send({ title, message, sessionID, directory }) {
       const args = ["--app-name", "OpenCode", "-u", "normal", "-t", "10000", title, message];
@@ -41,7 +40,26 @@ export default Plugin.define({
       );
     }
 
-    const batcher = createNotificationBatcher({ send });
+    const batcher = createNotificationBatcher({ send: sendOverride ?? send, windowMs: batchWindowMs });
+    let renameRPC;
+    try { renameRPC = context.client.rpc(RenameRPC); } catch { /* older server/plugin: notify without waiting */ }
+    const renameWaits = new Set();
+    const retryDelays = new Set();
+    let disposed = false;
+    const invalidatedExecutions = new Set();
+    const waitingFor = new Map();
+    const pendingCompletions = new Map();
+    const rememberCompletion = (sessionID, executionID) => {
+      waitingFor.set(sessionID, executionID);
+      pendingCompletions.set(sessionID, executionID);
+      if (waitingFor.size > 256) waitingFor.delete(waitingFor.keys().next().value);
+      if (pendingCompletions.size > 256) pendingCompletions.delete(pendingCompletions.keys().next().value);
+    };
+    const delay = (ms) => new Promise((resolve) => {
+      const entry = { resolve, timer: undefined };
+      entry.timer = setTimeout(() => { retryDelays.delete(entry); resolve(); }, ms);
+      retryDelays.add(entry);
+    });
 
     // Reads the cached session messages; any failure just omits the reply line.
     function readMessages(sessionID) {
@@ -53,10 +71,12 @@ export default Plugin.define({
       }
     }
 
-    function notifyForSession(sessionID, status) {
+    function notifyForSession(sessionID, status, executionID, trustedTitle) {
+      if (executionID && invalidatedExecutions.has(executionID)) return;
+      const notify = (resolvedTitle) => {
       const session = context.data.session.get(sessionID);
       const agent = session?.agent?.trim() || "OpenCode";
-      const sessionTitle = session?.title?.trim();
+      const sessionTitle = resolvedTitle || trustedTitle || session?.title?.trim();
       const task = sessionTitle && sessionTitle !== "New Session"
         ? truncateText(sessionTitle, 40)
         : `会话 ${sessionID.slice(-8)}`;
@@ -71,6 +91,52 @@ export default Plugin.define({
         message,
         directory,
       });
+      };
+      if (!renameRPC || !executionID || status === "等待权限批准" || status === "等待回答") { notify(trustedTitle); return; }
+      let done = false;
+      let timer;
+      let unsubscribe;
+      let resolveWait;
+      let terminalTitle = "";
+      let generationState = "unknown";
+      const wait = new Promise((resolve) => { resolveWait = resolve; });
+      const finish = () => { if (done) return; done = true; clearTimeout(timer); unsubscribe?.(); renameWaits.delete(cancel); resolveWait(); };
+      const cancel = finish;
+      renameWaits.add(cancel);
+      const onState = (event) => {
+        const state = event.data;
+        if (state.sessionID !== sessionID || state.executionID !== executionID) return;
+        generationState = state.status;
+        if (state.status !== "pending" && state.status !== "unknown") { terminalTitle = state.title || ""; finish(); }
+      };
+      try { unsubscribe = renameRPC.events.on("state", onState); } catch { finish(); }
+      timer = setTimeout(finish, renameWaitMs);
+      // Event subscription is established before the snapshot to close the
+      // terminal-event/query race. Unknown means the server-side plugin is absent.
+      Promise.resolve().then(async () => {
+        try {
+          const deadline = Date.now() + raceRetryMs;
+          do {
+            const state = await renameRPC.getState({ sessionID, executionID });
+            if (state.sessionID !== sessionID || state.executionID !== executionID) { finish(); break; }
+            generationState = state.status;
+            if (state.status === "pending") { await wait; break; }
+            if (state.status !== "unknown") { terminalTitle = state.title || ""; finish(); break; }
+            if (Date.now() >= deadline) { finish(); break; }
+            await delay(Math.min(25, deadline - Date.now()));
+          } while (!done && !disposed);
+        } catch { finish(); }
+        if (done && !disposed && !invalidatedExecutions.has(executionID)) {
+          try { await context.data.session.sync(sessionID); } catch { /* trusted same-execution RPC title remains a fallback */ }
+          try {
+            await context.data.session.permission.sync(sessionID);
+            await context.data.session.form.sync(sessionID, context.location);
+          } catch { return; }
+          // A long wait must not bypass the ordinary busy/permission/form recheck.
+          if (!completionRecheck.isIdle(sessionID)) return;
+          notify(terminalTitle);
+        }
+      }).catch((error) => { finish(); if (!disposed) console.error("OpenCode rename notification check failed:", error); });
     }
 
     const reportPermissionError = createPermissionErrorReporter({
@@ -85,6 +151,7 @@ export default Plugin.define({
       notify: (sessionID) => notifyForSession(sessionID, "等待权限批准"),
       isRootSession,
       onError: reportPermissionError,
+      delayMs: pendingDelayMs,
     });
 
     const getPendingForms = createPendingFormsReader(context.data, context.location);
@@ -95,6 +162,7 @@ export default Plugin.define({
       notify: (sessionID) => notifyForSession(sessionID, "等待回答"),
       onError: () => console.error("OpenCode form notification check failed; pending state unavailable, alert suppressed"),
       isRootSession,
+      delayMs: pendingDelayMs,
     });
 
     // `session.execution.*` marks the end of one agent round, not the whole
@@ -115,37 +183,58 @@ export default Plugin.define({
     });
     const completionRecheck = createIdleRechecker({
       isIdle,
-      notify: (sessionID, status) => notifyForSession(sessionID, status),
+      notify: (sessionID, status, executionID) => {
+        if (pendingCompletions.get(sessionID) === executionID) pendingCompletions.delete(sessionID);
+        if (executionID && invalidatedExecutions.has(executionID)) return;
+        notifyForSession(sessionID, status, executionID);
+      },
       onError: (error) => console.error("OpenCode idle recheck failed:", error),
+      delayMs: completionDelayMs,
     });
 
     const stop = [
+      context.data.on("session.execution.started", (event) => {
+        const id = event.data.sessionID;
+        const pending = pendingCompletions.get(id);
+        if (pending) invalidatedExecutions.add(pending);
+        const awaiting = waitingFor.get(id);
+        if (awaiting && event.id !== awaiting) invalidatedExecutions.add(awaiting);
+        if (invalidatedExecutions.size > 256) invalidatedExecutions.delete(invalidatedExecutions.values().next().value);
+      }),
       context.data.on("permission.asked", permissionNotifications.asked),
       context.data.on("permission.replied", permissionNotifications.replied),
       context.data.on("session.execution.succeeded", (event) => {
         if (isRootSession(event.data.sessionID)) {
-          completionRecheck.recheck(event.data.sessionID, "最新回复");
+          rememberCompletion(event.data.sessionID, event.id);
+          completionRecheck.recheck(event.data.sessionID, "最新回复", event.id);
         }
       }),
       context.data.on("session.execution.failed", (event) => {
         if (isRootSession(event.data.sessionID)) {
-          completionRecheck.recheck(event.data.sessionID, "执行失败");
+          rememberCompletion(event.data.sessionID, event.id);
+          completionRecheck.recheck(event.data.sessionID, "执行失败", event.id);
         }
       }),
       context.data.on("session.execution.interrupted", (event) => {
         if (isRootSession(event.data.sessionID)) {
-          completionRecheck.recheck(event.data.sessionID, "任务中断");
+          rememberCompletion(event.data.sessionID, event.id);
+          completionRecheck.recheck(event.data.sessionID, "任务中断", event.id);
         }
       }),
     ];
 
     return () => {
+      disposed = true;
       permissionNotifications.dispose();
       stopFormNotifications();
       completionRecheck.dispose();
+      renameWaits.forEach((cancel) => cancel());
+      for (const entry of retryDelays) { clearTimeout(entry.timer); entry.resolve(); }
+      retryDelays.clear();
       batcher.dispose();
       stop.forEach((unsubscribe) => unsubscribe());
       ipc.close();
     };
-  },
-});
+}
+
+export default definePlugin({ id: "opencode-omarchy-notifications", setup });
